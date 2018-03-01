@@ -24,11 +24,6 @@
 */
 
 
-//#define NO_VERIFY_HOME_S
-// maybe don't use this #define yet, it's not fully implemented:
-//  - Need to also check that the file name generation of the .cpp-***.cpp file is done correctly.
-
-
 
 #define SizeOf(a)  (sizeof(a) / sizeof(*(a)))
 
@@ -241,6 +236,120 @@ return true;
 }
 
 
+// Replaces the occurance of
+//  {o} -> " -o "+ QuoteMeta(Exe) +" "
+//  {i} -> " "+ QuoteMeta(Source) +" "
+//  {}  -> " -o "+ QuoteMeta(Exe) +" "+ QuoteMeta(Source) +" "
+// Provided they are not preceeded by a '\'.
+// If the source and/or the exe has not been indicated by a marker, it is appended. In the case of the exe, prefixed with " -o ".
+std::string AddSourceAndExeToCommand(const std::string& Cmd, const std::string& Source, const std::string& Exe)
+{
+  // Because our strings are quite short, and we have only one per execution,
+  // we can do a simple approach of just appending char by char to the output variable.
+
+  std::string Ret;
+
+  typedef enum
+  { eNormal= 0
+  , eBackSlash
+  , eBraceOpened
+  , eBracedI
+  , eBracedO
+  }
+    tState;
+
+  tState State= eNormal;
+
+  bool HaveSource= false;
+  bool HaveExe=    false;
+
+  for (int C= 0; C<Cmd.length();  C++ )
+  {
+    char Ch= Cmd[C];
+
+    switch (State)
+    {
+    case eNormal:
+        if (Ch == '\\')
+          State= eBackSlash;
+        else
+        if (Ch == '{')
+          State= eBraceOpened;
+        else
+          Ret+= Ch;
+      break;
+
+    case eBackSlash:
+        Ret+= '\\';
+        Ret+= Ch;
+        State= eNormal;
+      break;
+
+    case eBraceOpened:
+        if (Ch == 'i')
+          State= eBracedI;
+        else
+        if (Ch == 'o')
+          State= eBracedO;
+        else
+        if (Ch == '}')
+        {
+          Ret+= " -o "+ QuoteMeta(Exe) +" "+ QuoteMeta(Source) +" ";
+          HaveSource=
+          HaveExe=    true;
+          State= eNormal;
+        }else
+throw "unsupported or incomplete  marker found in compiler hash bang."; // TBD: provide an adequate error message and bail out gracefully instead of throwing a string.
+      break;
+
+    case eBracedI:
+        if (Ch == '}')
+        {
+          Ret+= " "+ QuoteMeta(Source) +" ";
+          HaveSource= true;
+          State= eNormal;
+        }else
+throw "unsupported or incomplete  marker found in compiler hash bang."; // TBD: provide an adequate error message and bail out gracefully instead of throwing a string.
+      break;
+
+    case eBracedO:
+        if (Ch == '}')
+        {
+          Ret+= " -o "+ QuoteMeta(Exe) +" ";
+          HaveExe= true;
+          State= eNormal;
+        }else
+throw "unsupported or incomplete  marker found in compiler hash bang."; // TBD: provide an adequate error message and bail out gracefully instead of throwing a string.
+      break;
+    }
+  }
+
+  switch (State)
+  {
+  case eBackSlash:
+throw "Concatenating compiler hashbang lines with a backslash not (yet) supported."; // TBD: provide an adequate error message and bail out gracefully instead of throwing a string.
+
+  case eBraceOpened:
+  case eBracedI:
+  case eBracedO:
+throw "unsupported or incomplete  marker found in compiler hash bang."; // TBD: provide an adequate error message and bail out gracefully instead of throwing a string.
+  }
+
+  if (!HaveExe)
+    Ret+= " -o "+ QuoteMeta(Exe);
+
+  if (!HaveSource)
+    Ret+= " "+ QuoteMeta(Source);
+
+
+return Ret;
+}
+
+
+
+
+
+
 bool CompileSource(const std::string& Source, const std::string& Exe)
 {
   std::string Cmd;
@@ -272,14 +381,14 @@ return false;
       }
     }
 
-    if(strncmp(Line.c_str(), "//#!", 4) == 0)
-    {
-      int IdxStart= 4;
-      while(IdxStart < Line.length())
-      {
-        if(Line[IdxStart] == ' ' || Line[IdxStart] == '\t')
-          IdxStart++;
-        else
+    if(strncmp(Line.c_str(), "//#!", 4) == 0)   // TBD: We could also support multi-line comments beginning with /*#! and these
+    {                                           //      then could be shell scripts - with /bin/sh being the default,
+      int IdxStart= 4;                          //      but one could also specify the shell e.g. via /*#!/bin/bash .
+      while(IdxStart < Line.length())           //      Or e.g. /*#!/usr/bin/perl -w . In order to also support things like #!environ(perl) -w
+      {                                                        // i.e. that tool which figures out the path to a tool, i don't know its
+        if(Line[IdxStart] == ' ' || Line[IdxStart] == '\t')    // name and syntax, we simply copy the code between /* and */ to a file,
+          IdxStart++;                                          // do a   chmod u+x   on it and execute it. Source and Exe paths are passed
+        else                                                   // in either as environment variables or as the two parameters, i don't know yet.
       break;
       }
 
@@ -293,36 +402,12 @@ return false;
       Cmd= "g++";
   }
 
-  bool bFoundMarker= false;
-  { std::string Tmp;
 
-    const char* aStr= Cmd.c_str();
-    while(true)
-    {
-      const char* aMarker= strstr(aStr, "{}");
-      if(!aMarker)
-      {
-        Tmp.append(aStr);
-    break;
-      }
-
-      bFoundMarker= true;
-
-      Tmp.append(aStr, aMarker);
-      Tmp.append(QuoteMeta(Source));
-
-      aStr= aMarker+ 2;
-    }
-
-    swap(Cmd, Tmp);
-  }
+  Cmd= AddSourceAndExeToCommand(Cmd, Source, Exe);
 
 
-
-
-  Cmd+= " -o "+ QuoteMeta(Exe);
-  if(!bFoundMarker)
-    Cmd+= " "+ QuoteMeta(Source);
+  //if(we are verbose)
+  //  printf("Executing: <%s>\n", Cmd.c_str());
 
   int rc= system(Cmd.c_str());
 
@@ -365,7 +450,6 @@ return fprintf(stderr, "No script file given. CppRunner is a tool to compile and
 
     std::string Base, Home;
 
-#ifndef NO_VERIFY_HOME_S
     bool bIsInHomeS= false;
     { const char* aLastSlash= strrchr(C_Cast<char*>(Script.c_str()), '/');
       Base= aLastSlash + 1;
@@ -387,7 +471,6 @@ return fprintf(stderr, "CppRunner: Could not get value of $HOME variable.\n")
     if(!bIsInHomeS)
 return fprintf(stderr, "CppRunner: Could not verify that the path \"%s\" points to the script in the ~/s/ directory.\n", Script.c_str())
      , 1;
-#endif
 
 
     // It's important that the Source resides in the same directory as the script, so that #include statements still work.
